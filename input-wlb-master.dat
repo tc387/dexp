@@ -6,14 +6,14 @@ INPUT FILE FOR MC HAIRY NANOPARTICLE CODE
 TNCH11		# of chains per colloid
 TNCH11 0 0 0   	# of chains per rx specie - colloid 1
 0 TNCH11 0 0  	# of chains per rx specie - colloid 2
-2 		# of blobs in each chain (1 is only an anchor)
-200000000	tot # of MC cycles
+1 		# of blobs in each chain (1 is only an anchor)
+10000000	tot # of MC cycles
 100000	output configration timer
 ------------------------------------------------------------
 RCOL11		colloid radius - minimum 2, otherwise problem with cells in Ecalc
 MAXBD11		maximum bond distance -- rcut_liglig
 0.0		fraction make/break bond moves ; else hop moves
-2.0, 0.1, 0.03	max hop blob, hop col, rot col (actually sin(.))
+2.0, 0.05, 0.02	max hop blob, hop col, rot col (actually sin(.))
 100		mnpic+1 -- max # of col,blobs,rec in each cell			
 XSEED11		random seed
 -----------------------------------------------------------

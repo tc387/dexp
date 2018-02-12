@@ -122,6 +122,7 @@ ncellsc=max(ncellsc,3)
 socc(:)=lbox(:)/ncellsc(:) ! renormalize socc
 
 ncellsb=floor(lbox(:)/rcut_blobblob)
+ncellsb=floor(lbox(:)/rcut_global) ! added 12 Feb 2018
 ncellsb=max(ncellsb,3)
 socb(:)=lbox(:)/ncellsb(:) ! renormalize socb
 
@@ -306,11 +307,11 @@ do icycle=1,ncycles
       
    enddo
    ! check bonds -- only for debugging
-!!$         call check_bonds_lig(ncol,maxncol,maxnblob,nchainspercol,& 
-!!$              nblobsperchain,ligboundto,posblob,rcut_liglig,lbox)   
-!!$   call check_cell_list(ncol,maxncol,maxnblob,nchainspercol,nblobsperchain,lbox,&
-!!$        poscol,posblob,mnpic,ncellsc,socc,celllistc,ipcc,ncellsb,socb,celllistb,ipcb) 
-!!$      
+!!         call check_bonds_lig(ncol,maxncol,maxnblob,nchainspercol,& 
+!!              nblobsperchain,ligboundto,posblob,rcut_liglig,lbox)   
+!!   call check_cell_list(ncol,maxncol,maxnblob,nchainspercol,nblobsperchain,lbox,&
+!!        poscol,posblob,mnpic,ncellsc,socc,celllistc,ipcc,ncellsb,socb,celllistb,ipcb) 
+      
    ! get the average number of bound ligands per chain
    ! only every 10 cycles, because it's expensive
    if (icycle/10 .eq. dble(icycle)/10) then
@@ -333,7 +334,7 @@ do icycle=1,ncycles
 
       call tot_ene_calc(posblob,poscol,lbox,nrec,ncol,maxncol,nchainspercol,& 
            nblobsperchain,maxnblob,celllistc,ipcc,celllistb,ipcb,ncellsc,ncellsb,&
-           socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,tot_ene)
+           socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,ligboundto,tot_ene)
       write(*,*)
       write(*,"(A,I10,A,F10.4)") 'icycle',icycle,', exe time (s) ',time2-time1
       write(*,"(A,F11.6,A,F11.6,A,F11.6)") 'avncol:',dble(avencol)/dble(totidm),&
@@ -363,6 +364,9 @@ do icycle=1,ncycles
       call output_conf_wlbonds(poscol,posblob,maxncol,nchainspercol,nblobsperchain,ncol,&
            activity,nout,icycle,outfilename,nrxspec,ichainspec,&
            psiWL,hWL,doWL_flag,nWL_points)
+      call output_conf_lammps(poscol,posblob,maxncol,nchainspercol,nblobsperchain,ncol,&
+     nout,icycle,outfilename,nrxspec,ichainspec,nWL_points,rWL_min,WLbinsize,&
+     psiWL,hWL,lbox,ligboundto)
       time1=time2
    endif
   
@@ -373,6 +377,18 @@ close(101)
 !close(909)
 
 end program mc2cbWL
+  
+subroutine fbondene(ene,distij2)
+  implicit none
+  real*8, intent(in) :: distij2
+  real*8, intent(out) :: ene
+  real*8 :: kspringbond
+  kspringbond=1.0
+  ! simple harmonic function
+  ene = kspringbond/2.0 * distij2
+end subroutine fbondene
+
+
 ! ========================================================================== !
 ! ========================================================================== !
 ! ========================================================================== !
@@ -818,7 +834,7 @@ subroutine mc_move2WL(lbox,ncol,maxncol,nchainspercol,nblobsperchain,maxnblob,rc
   real*8 :: Eold,Enew,rnd,rnd3(3),rinew(3),riold(3),arg,volume,ctb(3,nchainspercol),&
        Srot,Vrot(2),ROTMATRIX(3,3),sqrtSrot,urot(3),sinfi,cosfi,omcosfi,rnd2(2),&
        distij(3),Qold,Qnew,rancnew(3,nchainspercol),garg,q1bi_old(mnpic),q1bi_new(mnpic),&
-       rcut_liglig2,distij2,distijold(3),distij2old
+       rcut_liglig2,distij2,distijold(3),distij2old,tmpreal8,oldbondelene,newbondelene
   integer :: kk,parti, inewcell(3),jj,ii,ifreecol,iifreecol,ibond,ipcold(3),&
        ipcnew(3),nfreecol,iblob,iiblob,jblob,jjblob,iichain,jjchain,itrial,iicol,&
        jrecind,jjrec,nlighomies_new,nlighomies_old,whichhomies_old(2,mnpic*10),&
@@ -906,26 +922,54 @@ subroutine mc_move2WL(lbox,ncol,maxncol,nchainspercol,nblobsperchain,maxnblob,rc
     
         ! CALCULATE OLD & NEW ENERGY
         Eold=0
-        Enew=0       
-        call col_energy_calc(posblob,poscol,lbox,nrec,maxncol,nchainspercol,& 
-             nblobsperchain,maxnblob,celllistc,ipcc,celllistb,ipcb,ncellsc,ncellsb,&
-             socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,&
-             poscol(:,iicol),iicol,Eold)
-        call col_energy_calc(posblob,poscol,lbox,nrec,maxncol,nchainspercol,& 
-             nblobsperchain,maxnblob,celllistc,ipcc,celllistb,ipcb,ncellsc,ncellsb,&
-             socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,&
-             rinew(:),iicol,Enew)
+        Enew=0
+        if (nblobsperchain .gt. 1) then
+           call col_energy_calc(posblob,poscol,lbox,nrec,maxncol,nchainspercol,& 
+                nblobsperchain,maxnblob,celllistc,ipcc,celllistb,ipcb,ncellsc,ncellsb,&
+                socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,&
+                poscol(:,iicol),iicol,Eold)
+           call col_energy_calc(posblob,poscol,lbox,nrec,maxncol,nchainspercol,& 
+                nblobsperchain,maxnblob,celllistc,ipcc,celllistb,ipcb,ncellsc,ncellsb,&
+                socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,&
+                rinew(:),iicol,Enew)
+           
+           ! ADD HARMONIC ENERGY
+           do iichain=1,nchainspercol
+              distij(:)=posblob(:,2,iichain,iicol)-posblob(:,1,iichain,iicol)     
+              distij(1:2)=distij(1:2)-lbox(1:2)*nint(distij(1:2)/lbox(1:2))       
+              Eold=Eold+0.75*sum(distij*distij) ! energy of the first blob-anchor
+              
+              distij(:)=posblob(:,2,iichain,iicol)-rancnew(:,iichain)     
+              distij(1:2)=distij(1:2)-lbox(1:2)*nint(distij(1:2)/lbox(1:2))       
+              Enew=Enew+0.75*sum(distij*distij)! energy of the first blob-anchor
+           enddo ! iichain
+        else !take into account bond stretching energy when moving colloid
 
-        ! ADD HARMONIC ENERGY
-        do iichain=1,nchainspercol
-           distij(:)=posblob(:,2,iichain,iicol)-posblob(:,1,iichain,iicol)     
-           distij(1:2)=distij(1:2)-lbox(1:2)*nint(distij(1:2)/lbox(1:2))       
-           Eold=Eold+0.75*sum(distij*distij) ! energy of the first blob-anchor
+           ! AAAAAAAA
+           ! loop over all formed bonds
+       
+           do iichain=1,nchainspercol ! loop over the ii colloid
+              jjcol=ligboundto(1,iichain,iicol)
+              jjchain=ligboundto(2,iichain,iicol)
+              if (jjcol .gt. 0) then  ! bond is present
+                 distij=posblob(:,1,iichain,iicol) - posblob(:,1,jjchain,jjcol)
+                 distij(1:3)=distij(1:3)-lbox(1:3)*nint(distij(1:3)/lbox(1:3))
+                 distij2=sum(distij*distij)
+                 call fbondene(tmpreal8,distij2)
+                 Eold=Eold + tmpreal8 
 
-           distij(:)=posblob(:,2,iichain,iicol)-rancnew(:,iichain)     
-           distij(1:2)=distij(1:2)-lbox(1:2)*nint(distij(1:2)/lbox(1:2))       
-           Enew=Enew+0.75*sum(distij*distij)! energy of the first blob-anchor
-        enddo ! iichain
+                 ! new distance
+                 distij=rancnew(:,iichain) - posblob(:,1,jjchain,jjcol)
+                 distij(1:3)=distij(1:3)-lbox(1:3)*nint(distij(1:3)/lbox(1:3))
+                 distij2=sum(distij*distij)
+                 call fbondene(tmpreal8,distij2)
+                 Enew=Enew + tmpreal8
+              endif
+           enddo
+                      
+        endif
+
+
         
         arg=exp(Eold-Enew) ! *exp(psiWL(WLnewbin)-psiWL(WLoldbin))
         call random_number(rnd)
@@ -934,11 +978,16 @@ subroutine mc_move2WL(lbox,ncol,maxncol,nchainspercol,nblobsperchain,maxnblob,rc
            posblob(:,1,:,iicol)=rancnew(:,:)
            poscol(:,iicol)=rinew
            tot_ene=tot_ene+Enew-Eold
-           if (any(inewcell .ne. ipcc(1:3,iicol))) then
-
-              call update_cell_list(iicol,maxncol,inewcell,ipcc,celllistc,&
-                   ncellsc,mnpic)
-           endif
+           
+           call make_cell_list(ncol,maxncol,maxnblob,nchainspercol,nblobsperchain,&
+                poscol,posblob,lbox,&
+                celllistc,ipcc,celllistb,ipcb,ncellsc,ncellsb,socc,socb,mnpic)
+                     
+!!$           if (any(inewcell .ne. ipcc(1:3,iicol))) then
+!!$
+!!$              call update_cell_list(iicol,maxncol,inewcell,ipcc,celllistc,&
+!!$                   ncellsc,mnpic)
+!!$           endif
         else ! REJECT   
         endif
      endif ! OVERLAP
@@ -951,49 +1000,18 @@ subroutine mc_move2WL(lbox,ncol,maxncol,nchainspercol,nblobsperchain,maxnblob,rc
      iichain=floor(rnd3(2)*nchainspercol)+1
      iiblob=floor(rnd3(3)*(nblobsperchain))+1   ! can also move anchors
 
-     if (mobile_ligands .and. (iiblob .eq. 1)) then ! move ligand anchor
-        call random_number(rnd3)
-        rinew(:)=posblob(:,iiblob,iichain,iicol)+max_hop_blob*2*(rnd3(:)-0.5d0)
-        ctb(:,1)=rinew(:)-poscol(:,iicol) ! colloid to blob distance
-        ctb(:,1)=ctb(:,1)/sqrt(sum(ctb(:,1)*ctb(:,1)))*rcol ! normalize to colloid surface
-        rinew(:)=poscol(:,iicol)+ctb(:,1) ! new position on colloid surface
-        
-        distij(:)=posblob(:,2,iichain,iicol)-posblob(:,1,iichain,iicol)
-        distij(1:3)=distij(1:3)-lbox(1:3)*nint(distij(1:3)/lbox(1:3))
-        Eold=0.75*sum(distij*distij) 
-        distij(:)=posblob(:,2,iichain,iicol)-rinew(:)
-        distij(1:3)=distij(1:3)-lbox(1:3)*nint(distij(1:3)/lbox(1:3))
-        Enew=0.75*sum(distij*distij)
-
-   !     write(*,*)
-   !     write(*,*) posblob(:,iiblob,iichain,iicol)-rinew(:) 
-   !     write(*,*) rcol, rinew
-   !     write(*,*) Enew, Eold
-        ! DO METROPOLIS
-        arg=exp(Eold-Enew)
-        call random_number(rnd)
-        if (rnd .lt. arg) then! ACCEPT
-           movebacc=movebacc+1
-           posblob(:,1,iichain,iicol)=rinew(:)
-           tot_ene=tot_ene+Enew-Eold 
+     if (nblobsperchain .eq. 1) then ! ligand is the anchor  12 feb 2018
+        rinew(:)= posblob(:,iiblob,iichain,iicol) ! new pos is the old pos
+        if (mobile_ligands) then
+           call random_number(rnd3)
+           rinew(:)=posblob(:,iiblob,iichain,iicol)+max_hop_blob*2*(rnd3(:)-0.5d0)
+           ctb(:,1)=rinew(:)-poscol(:,iicol) ! colloid to blob distance
+           ctb(:,1)=ctb(:,1)/sqrt(sum(ctb(:,1)*ctb(:,1)))*rcol ! normalize to colloid surface
+           rinew(:)=poscol(:,iicol)+ctb(:,1) ! new position on colloid surface
         endif
-
-     elseif (iiblob .gt. 1) then ! move blobs   
-        ! get new blob position
-        call random_number(rnd3)
-        rinew(:)=posblob(:,iiblob,iichain,iicol)+max_hop_blob*2*(rnd3(:)-0.5d0)
-        rinew(1:3)=rinew(1:3)-lbox(1:3)*floor(rinew(1:3)/lbox(1:3))
         
         Eold=0
         Enew=0
-        call blob_energy_calc(posblob,poscol,lbox,nrec,maxncol,nchainspercol,& 
-             nblobsperchain,maxnblob,celllistc,ipcc,celllistb,ipcb,ncellsc,ncellsb,&
-             socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,&
-             posblob(:,iiblob,iichain,iicol),iicol,iichain,iiblob,Eold)
-        call blob_energy_calc(posblob,poscol,lbox,nrec,maxncol,nchainspercol,& 
-             nblobsperchain,maxnblob,celllistc,ipcc,celllistb,ipcb,ncellsc,ncellsb,&
-             socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,&
-             rinew,iicol,iichain,iiblob,Enew)
         
         ! DO BINDING WITH OTHER LIGANDS
         lastbond=.false. ! flag we are moving the last bound ligand
@@ -1001,190 +1019,451 @@ subroutine mc_move2WL(lbox,ncol,maxncol,nchainspercol,nblobsperchain,maxnblob,rc
         Qnew=1
         nlighomies_old=0
         nlighomies_new=0
-        if (iiblob .eq. nblobsperchain) then
-
-           ! check if colloid is outside of distance
-           distij(1:3) = poscol(1:3,2) - poscol(1:3,1)
-           distij2=sum(distij(:)*distij(:))
-           if ( distij2 .gt.  max_colzWL * max_colzWL) then
-              ! check if  this blob has the last bond
-              if((nbonds .eq. 1).and.(ligboundto(1,iichain,iicol).gt.0 )) then ! this ligand has the last bond
-                 lastbond=.true.
-                 Qold=0 ! unbound state is not possible
-                 Qnew=0
-              elseif(nbonds .eq. 0) then
-                 write(*,*) 'WARNING: nbonds = 0, should not be the case for Wl bonds.. '
-                 write(*,*) 'only ok if it heapens at the begining and the initial colloid height is > h_0'
-                 return  
-              endif
-             
-           endif
-   
-           ! can do binding        
-           ! first unbind
-           
-           if (ligboundto(1,iichain,iicol).gt.0) then
-              distij(:)=posblob(:,nblobsperchain,iichain,iicol) - posblob(:, &
-                   nblobsperchain,ligboundto(2,iichain,iicol),ligboundto(1,iichain,iicol))
-              distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
-              if (sum(distij*distij) .gt. rcut_liglig2 ) then
-                 write(*,*) 'WARNING: trying to delete a bond but distij > rcut_liglig' ! cannot unbind if distij2 > rcut2, no reverse move in configurational bias !!!!
-              endif
-              
-              ligboundto(:,ligboundto(2,iichain,iicol),ligboundto(1,iichain,iicol))=0
-              ligboundto(:,iichain,iicol)=0
-              nbonds=nbonds-1
-           endif
-           
-           call find_lig_homie(posblob(:,nblobsperchain,iichain,iicol),nchainspercol,nblobsperchain,lbox,posblob,&
-                celllistb,ipcb,ncellsb,socb,mnpic,rcut_liglig,ligboundto,maxncol,maxnblob,&
-                nlighomies_old,whichhomies_old)
-
-           
-           ! get the old binding partition function
-           q1bi_old(:)=0  
-           if ((nlighomies_old .gt. 0) .and. (nbonds < nWL_points - 1 )) then
-             
-              ! get partition funcition with psi bias
-              do ihomie=1,nlighomies_old
-                 if (ichainspec(iichain,iicol) .eq. ichainspec(whichhomies_old(2,ihomie), &
-                      whichhomies_old(1,ihomie))) then
-                    ! homie is of equal type, must exclude otherwise ligands can bind to themselves!!
-                    q1bi_old(ihomie)=0
-                 else
-                    distij(:)=posblob(:,nblobsperchain,iichain,iicol) - posblob(:,nblobsperchain,&
-                         whichhomies_old(2,ihomie),whichhomies_old(1,ihomie))
-                    distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
-                    q1bi_old(ihomie)=dexp(-RXBONDENE(ichainspec(whichhomies_old(2,ihomie),whichhomies_old(1,ihomie)),&
-                         ichainspec(iichain,iicol)) - 0.534*(sqrt(sum(distij*distij))-0.73)**2 & 
-                         + psiWL(nbonds+2)-psiWL(nbonds+1))
-                    !  write(*,*)q1bi_old(ihomie)
-                 endif
-              enddo
-             
-             ! q1bi_old(:)=q1bi_old(:)*dexp(psiWL(nbonds+2)-psiWL(nbonds+1))  !WL
-         !     write(*,*) 'AAAA ', q1bi_old(:nlighomies_old)
-         !     write(*,*) 'BBBB ', dexp(700.0d0),dexp(-700.0d0),dexp(RXBONDENE(1,1)),dexp(-RXBONDENE(1,1))
-              Qold=Qold+sum(q1bi_old(1:nlighomies_old))
-            !  write(*,*) 'AAAQo ', nbonds, Qold, q1bi_old(1:nlighomies_old)
-            !  write(*,*) psiWL
-           endif ! nlighomies > 0
-           
-              
-           ! new position homies
-           call find_lig_homie(rinew,nchainspercol,nblobsperchain,lbox,posblob,&
-                celllistb,ipcb,ncellsb,socb,mnpic,rcut_liglig,ligboundto,maxncol,maxnblob,&
-                nlighomies_new,whichhomies_new)
-           
-           ! get the new binding partition function
-           q1bi_new(:)=0
-           if ((nlighomies_new .gt. 0) .and. (nbonds < nWL_points - 1)) then
-              
-              ! get partition funcition
-              do ihomie=1,nlighomies_new
-                 if (ichainspec(iichain,iicol) .eq. ichainspec(whichhomies_new(2,ihomie), &
-                      whichhomies_new(1,ihomie))) then ! homie is of equal type
-                    q1bi_new(ihomie)=0
-                 else
-                    
-                    distij(:)=rinew(:)-posblob(:,nblobsperchain,whichhomies_new(2,ihomie),whichhomies_new(1,ihomie))
-                    distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
-                    q1bi_new(ihomie)=dexp(-RXBONDENE(ichainspec(whichhomies_new(2,ihomie),whichhomies_new(1,ihomie)),&
-                         ichainspec(iichain,iicol)) - 0.534*(sqrt(sum(distij*distij))-0.73)**2 &
-                         +psiWL(nbonds+2)-psiWL(nbonds+1))
-                 endif
-              enddo
-        !      q1bi_new(:)=q1bi_new(:)*exp(psiWL(nbonds+2)-psiWL(nbonds+1)) !WL
-              Qnew=Qnew+sum(q1bi_new(1:nlighomies_new))
-           !   write(*,*) 'BBBQn ', nbonds, Qnew, q1bi_new(1:nlighomies_new)
-           endif ! nrechomies > 0
-           
-        endif ! iiblob .eq. nblobsperchain
-        ! END BiNDING WITH LIGANDS
         
-        ! DO METROPOLIS
-        arg=exp(Eold-Enew)*Qnew/Qold
-    !    if (isnan(arg)) then
-    !       write(*,*) Qnew, Qold,(0.5 < arg)
-    !    endif
-        call random_number(rnd)
-        if (rnd .lt. arg) then! ACCEPT
-           
-           movebacc=movebacc+1
-           posblob(:,iiblob,iichain,iicol)=rinew(:)
-           tot_ene=tot_ene+Enew-Eold        
-           
-           inewcell(:) = floor(rinew(:)/socb(:))+1
-  !!         inewcell(3)=min(inewcell(3),ncellsb(3)) ! because soft blobs can in principle penetrate the wall slightly
-  !!         inewcell(3)=max(inewcell(3),1)
-           iblob=(iicol-1)*nblobsperchain*nchainspercol+(iichain-1)*nblobsperchain+iiblob
-           if (any(inewcell .ne. ipcb(1:3,iblob))) then
-              call update_cell_list(iblob,maxnblob,inewcell,ipcb,celllistb,&
-                   ncellsb,mnpic)
+        
+        ! check if colloid is outside of distance
+        distij(1:3) = poscol(1:3,2) - poscol(1:3,1)
+        distij2=sum(distij(:)*distij(:))
+        if ( distij2 .gt.  max_colzWL * max_colzWL) then
+           ! check if  this blob has the last bond
+           if((nbonds .eq. 1).and.(ligboundto(1,iichain,iicol).gt.0 )) then ! this ligand has the last bond
+              lastbond=.true.
+              Qold=0 ! unbound state is not possible
+              Qnew=0
+           elseif(nbonds .eq. 0) then
+              write(*,*) 'WARNING: nbonds = 0, should not be the case for Wl bonds.. '
+              write(*,*) 'only ok if it heapens at the begining and the initial colloid height is > h_0'
+              return  
            endif
            
-           ! bind to some ligand
-            if (lastbond) then ! unbound state is not possible, last bond and colloid is outside of range.
-              arg=0
-           else
-              arg=1.0d0/Qnew
+        endif
+        
+        ! can do binding        
+        ! first unbind
+        
+        if (ligboundto(1,iichain,iicol).gt.0) then
+           distij(:)=posblob(:,nblobsperchain,iichain,iicol) - posblob(:, &
+                nblobsperchain,ligboundto(2,iichain,iicol),ligboundto(1,iichain,iicol))
+           distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
+           distij2=sum(distij*distij)
+           if (distij2 .gt. rcut_liglig2 ) then
+              write(*,*) 'WARNING: trying to delete a bond but distij > rcut_liglig' ! cannot unbind if distij2 > rcut2, no reverse move in configurational bias !!!!
+              return
            endif
+           call fbondene(tmpreal8,distij2)
+           tot_ene=tot_ene-tmpreal8  !  delete the bond  
            
-         !  write(*,*) 'CCCC ', arg
-         !  write(*,*)
-           if (nbonds < nWL_points - 1) then ! less than maximum number of bonds, can bind more
-              q1bi_new(:)=q1bi_new(:)/Qnew ! normalise partition functions
-              call random_number(rnd)
-              ! bind to some receptor
-              if (rnd .gt. arg) then !  bind
+           ligboundto(:,ligboundto(2,iichain,iicol),ligboundto(1,iichain,iicol))=0
+           ligboundto(:,iichain,iicol)=0
+           nbonds=nbonds-1
+        endif
+        
+        call find_lig_homie(posblob(:,nblobsperchain,iichain,iicol),nchainspercol,nblobsperchain,lbox,posblob,&
+             celllistb,ipcb,ncellsb,socb,mnpic,rcut_liglig,ligboundto,maxncol,maxnblob,&
+             nlighomies_old,whichhomies_old)
+        
+        
+        ! get the old binding partition function
+        q1bi_old(:)=0  
+        if ((nlighomies_old .gt. 0) .and. (nbonds < nWL_points - 1 )) then
+           
+           ! get partition funcition with psi bias
+           do ihomie=1,nlighomies_old
+              if (ichainspec(iichain,iicol) .eq. ichainspec(whichhomies_old(2,ihomie), &
+                   whichhomies_old(1,ihomie))) then
+                 ! homie is of equal type, must exclude otherwise ligands can bind to themselves!!
+                 q1bi_old(ihomie)=0
+              else
+                 distij(:)=posblob(:,nblobsperchain,iichain,iicol) - posblob(:,nblobsperchain,&
+                      whichhomies_old(2,ihomie),whichhomies_old(1,ihomie))
+                 distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
                  
-                 do ihomie=1,nlighomies_new
-                    arg=arg+q1bi_new(ihomie)
-                    if ((rnd .le. arg) .or. (isnan(arg))) then
-                       jjcol=whichhomies_new(1,ihomie)
-                       jjchain=whichhomies_new(2,ihomie)
-                       ligboundto(1:2,iichain,iicol)=(/jjcol,jjchain/)
-                       ligboundto(1:2,jjchain,jjcol)=(/iicol,iichain/)
-                       nbonds=nbonds+1  ! add bond to global bonds count
-                       !        write(*,*) iicol, iichain
-                       !        write(*,*) jjcol, jjchain
-                       exit
-                    endif
-                 enddo
+                 call fbondene(oldbondelene,sum(distij*distij))  ! old bond elastic energy
+                 q1bi_old(ihomie)=dexp(-RXBONDENE(ichainspec(whichhomies_old(2,ihomie),whichhomies_old(1,ihomie)),&
+                      ichainspec(iichain,iicol)) - oldbondelene &
+                      + psiWL(nbonds+2)-psiWL(nbonds+1))
+                 !  write(*,*)q1bi_old(ihomie)
               endif
-           endif
+           enddo
            
-        else ! REJECT
-           ! rebind to some ligand
-           if (lastbond) then
-              arg=0
-           else
-              arg=1.0d0/Qold
-           endif
-         !  write(*,*) 'DDDD ', arg
-         !  write(*,*)
-           if (nbonds < nWL_points - 1) then ! less than maximum number of bonds, can bind more
-              q1bi_old(:)=q1bi_old(:)/Qold ! normalise partition functions
-              call random_number(rnd)
-              ! bind to some receptor
-              if (rnd .gt. arg) then !  bind
+           ! q1bi_old(:)=q1bi_old(:)*dexp(psiWL(nbonds+2)-psiWL(nbonds+1))  !WL
+           !     write(*,*) 'AAAA ', q1bi_old(:nlighomies_old)
+           !     write(*,*) 'BBBB ', dexp(700.0d0),dexp(-700.0d0),dexp(RXBONDENE(1,1)),dexp(-RXBONDENE(1,1))
+           Qold=Qold+sum(q1bi_old(1:nlighomies_old))
+           !  write(*,*) 'AAAQo ', nbonds, Qold, q1bi_old(1:nlighomies_old)
+           !  write(*,*) psiWL
+        endif ! nlighomies > 0
+        
+        
+        ! new position homies
+        call find_lig_homie(rinew,nchainspercol,nblobsperchain,lbox,posblob,&
+             celllistb,ipcb,ncellsb,socb,mnpic,rcut_liglig,ligboundto,maxncol,maxnblob,&
+             nlighomies_new,whichhomies_new)
+        
+        ! get the new binding partition function
+        q1bi_new(:)=0
+        if ((nlighomies_new .gt. 0) .and. (nbonds < nWL_points - 1)) then
+           
+           ! get partition funcition
+           do ihomie=1,nlighomies_new
+              if (ichainspec(iichain,iicol) .eq. ichainspec(whichhomies_new(2,ihomie), &
+                   whichhomies_new(1,ihomie))) then ! homie is of equal type
+                 q1bi_new(ihomie)=0
+              else
                  
-                 do ihomie=1,nlighomies_old
-                    arg=arg+q1bi_old(ihomie)
-                    if ((rnd .le. arg) .or. (isnan(arg))) then
-                       jjcol=whichhomies_old(1,ihomie)
-                       jjchain=whichhomies_old(2,ihomie)
-                       ligboundto(1:2,iichain,iicol)=(/jjcol,jjchain/)
-                       ligboundto(1:2,jjchain,jjcol)=(/iicol,iichain/)
-                       nbonds=nbonds+1
-                       
-                       exit
-                    endif
-                 enddo
-              endif ! bind
+                 distij(:)=rinew(:)-posblob(:,nblobsperchain,whichhomies_new(2,ihomie),whichhomies_new(1,ihomie))
+                 distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
+                 call fbondene(newbondelene,sum(distij*distij))
+                 
+                 q1bi_new(ihomie)=dexp(-RXBONDENE(ichainspec(whichhomies_new(2,ihomie),whichhomies_new(1,ihomie)),&
+                      ichainspec(iichain,iicol)) -newbondelene &
+                      +psiWL(nbonds+2)-psiWL(nbonds+1))
+              endif
+           enddo
+           !      q1bi_new(:)=q1bi_new(:)*exp(psiWL(nbonds+2)-psiWL(nbonds+1)) !WL
+           Qnew=Qnew+sum(q1bi_new(1:nlighomies_new))
+           !   write(*,*) 'BBBQn ', nbonds, Qnew, q1bi_new(1:nlighomies_new)
+        endif ! nrechomies > 0
+        
+     endif ! iiblob .eq. nblobsperchain
+     ! END BiNDING WITH LIGANDS
+     
+     ! DO METROPOLIS
+     arg=exp(Eold-Enew)*Qnew/Qold
+     !    if (isnan(arg)) then
+     !       write(*,*) Qnew, Qold,(0.5 < arg)
+     !    endif
+     call random_number(rnd)
+     if (rnd .lt. arg) then! ACCEPT
+        
+        movebacc=movebacc+1
+        posblob(:,iiblob,iichain,iicol)=rinew(:)
+        tot_ene=tot_ene+Enew-Eold        
+        
+        inewcell(:) = floor(rinew(:)/socb(:))+1
+        !!         inewcell(3)=min(inewcell(3),ncellsb(3)) ! because soft blobs can in principle penetrate the wall slightly
+        !!         inewcell(3)=max(inewcell(3),1)
+        iblob=(iicol-1)*nblobsperchain*nchainspercol+(iichain-1)*nblobsperchain+iiblob
+        if (any(inewcell .ne. ipcb(1:3,iblob))) then
+           call update_cell_list(iblob,maxnblob,inewcell,ipcb,celllistb,&
+                ncellsb,mnpic)
+        endif
+        
+        ! bind to some ligand
+        if (lastbond) then ! unbound state is not possible, last bond and colloid is outside of range.
+           arg=0
+        else
+           arg=1.0d0/Qnew
+        endif
+        
+        !  write(*,*) 'CCCC ', arg
+        !  write(*,*)
+        if (nbonds < nWL_points - 1) then ! less than maximum number of bonds, can bind more
+           q1bi_new(:)=q1bi_new(:)/Qnew ! normalise partition functions
+           call random_number(rnd)
+           ! bind to some receptor
+           if (rnd .gt. arg) then !  bind
+              
+              do ihomie=1,nlighomies_new
+                 arg=arg+q1bi_new(ihomie)
+                 if ((rnd .le. arg) .or. (isnan(arg))) then
+                    jjcol=whichhomies_new(1,ihomie)
+                    jjchain=whichhomies_new(2,ihomie)
+                    ligboundto(1:2,iichain,iicol)=(/jjcol,jjchain/)
+                    ligboundto(1:2,jjchain,jjcol)=(/iicol,iichain/)
+                    nbonds=nbonds+1  ! add bond to global bonds count
+                    
+                    ! update global energy
+                    distij(:)=rinew(:)-posblob(:,nblobsperchain,jjchain,jjcol)
+                    distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
+                    call fbondene(newbondelene,sum(distij*distij))
+                    tot_ene=tot_ene+newbondelene
+                    
+                    !        write(*,*) iicol, iichain
+                    !        write(*,*) jjcol, jjchain
+                    exit
+                 endif
+              enddo
            endif
-        endif ! accept/reject
-     endif ! move anchor/other blob
+        endif
+        
+     else ! REJECT
+        ! rebind to some ligand
+        if (lastbond) then
+           arg=0
+        else
+           arg=1.0d0/Qold
+        endif
+        !  write(*,*) 'DDDD ', arg
+        !  write(*,*)
+        if (nbonds < nWL_points - 1) then ! less than maximum number of bonds, can bind more
+           q1bi_old(:)=q1bi_old(:)/Qold ! normalise partition functions
+           call random_number(rnd)
+           ! bind to some receptor
+           if (rnd .gt. arg) then !  bind
+              
+              do ihomie=1,nlighomies_old
+                 arg=arg+q1bi_old(ihomie)
+                 if ((rnd .le. arg) .or. (isnan(arg))) then
+                    jjcol=whichhomies_old(1,ihomie)
+                    jjchain=whichhomies_old(2,ihomie)
+                    ligboundto(1:2,iichain,iicol)=(/jjcol,jjchain/)
+                    ligboundto(1:2,jjchain,jjcol)=(/iicol,iichain/)
+                    nbonds=nbonds+1
+
+                    ! update global energy
+                    distij(:)=posblob(:,nblobsperchain,iichain,iicol ) - posblob(:,nblobsperchain,jjchain,jjcol)
+                    distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
+                    call fbondene(newbondelene,sum(distij*distij))
+                    tot_ene=tot_ene+newbondelene
+                    
+                    exit
+                 endif
+              enddo
+           endif ! bind
+        endif
+     endif ! accept/reject
+  
+
+!!$     if (mobile_ligands .and. (iiblob .eq. 1)) then ! move ligand anchor
+!!$        call random_number(rnd3)
+!!$        rinew(:)=posblob(:,iiblob,iichain,iicol)+max_hop_blob*2*(rnd3(:)-0.5d0)
+!!$        ctb(:,1)=rinew(:)-poscol(:,iicol) ! colloid to blob distance
+!!$        ctb(:,1)=ctb(:,1)/sqrt(sum(ctb(:,1)*ctb(:,1)))*rcol ! normalize to colloid surface
+!!$        rinew(:)=poscol(:,iicol)+ctb(:,1) ! new position on colloid surface
+!!$        
+!!$        distij(:)=posblob(:,2,iichain,iicol)-posblob(:,1,iichain,iicol)
+!!$        distij(1:3)=distij(1:3)-lbox(1:3)*nint(distij(1:3)/lbox(1:3))
+!!$        Eold=0.75*sum(distij*distij) 
+!!$        distij(:)=posblob(:,2,iichain,iicol)-rinew(:)
+!!$        distij(1:3)=distij(1:3)-lbox(1:3)*nint(distij(1:3)/lbox(1:3))
+!!$        Enew=0.75*sum(distij*distij)
+!!$
+!!$   !     write(*,*)
+!!$   !     write(*,*) posblob(:,iiblob,iichain,iicol)-rinew(:) 
+!!$   !     write(*,*) rcol, rinew
+!!$   !     write(*,*) Enew, Eold
+!!$        ! DO METROPOLIS
+!!$        arg=exp(Eold-Enew)
+!!$        call random_number(rnd)
+!!$        if (rnd .lt. arg) then! ACCEPT
+!!$           movebacc=movebacc+1
+!!$           posblob(:,1,iichain,iicol)=rinew(:)
+!!$           tot_ene=tot_ene+Enew-Eold 
+!!$        endif
+!!$
+!!$     elseif (iiblob .gt. 1) then ! move blobs   
+!!$        ! get new blob position
+!!$        call random_number(rnd3)
+!!$        rinew(:)=posblob(:,iiblob,iichain,iicol)+max_hop_blob*2*(rnd3(:)-0.5d0)
+!!$        rinew(1:3)=rinew(1:3)-lbox(1:3)*floor(rinew(1:3)/lbox(1:3))
+!!$        
+!!$        Eold=0
+!!$        Enew=0
+!!$        call blob_energy_calc(posblob,poscol,lbox,nrec,maxncol,nchainspercol,& 
+!!$             nblobsperchain,maxnblob,celllistc,ipcc,celllistb,ipcb,ncellsc,ncellsb,&
+!!$             socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,&
+!!$             posblob(:,iiblob,iichain,iicol),iicol,iichain,iiblob,Eold)
+!!$        call blob_energy_calc(posblob,poscol,lbox,nrec,maxncol,nchainspercol,& 
+!!$             nblobsperchain,maxnblob,celllistc,ipcc,celllistb,ipcb,ncellsc,ncellsb,&
+!!$             socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,&
+!!$             rinew,iicol,iichain,iiblob,Enew)
+!!$        
+!!$        ! DO BINDING WITH OTHER LIGANDS
+!!$        lastbond=.false. ! flag we are moving the last bound ligand
+!!$        Qold=1
+!!$        Qnew=1
+!!$        nlighomies_old=0
+!!$        nlighomies_new=0
+!!$        if (iiblob .eq. nblobsperchain) then
+!!$
+!!$           ! check if colloid is outside of distance
+!!$           distij(1:3) = poscol(1:3,2) - poscol(1:3,1)
+!!$           distij2=sum(distij(:)*distij(:))
+!!$           if ( distij2 .gt.  max_colzWL * max_colzWL) then
+!!$              ! check if  this blob has the last bond
+!!$              if((nbonds .eq. 1).and.(ligboundto(1,iichain,iicol).gt.0 )) then ! this ligand has the last bond
+!!$                 lastbond=.true.
+!!$                 Qold=0 ! unbound state is not possible
+!!$                 Qnew=0
+!!$              elseif(nbonds .eq. 0) then
+!!$                 write(*,*) 'WARNING: nbonds = 0, should not be the case for Wl bonds.. '
+!!$                 write(*,*) 'only ok if it heapens at the begining and the initial colloid height is > h_0'
+!!$                 return  
+!!$              endif
+!!$             
+!!$           endif
+!!$   
+!!$           ! can do binding        
+!!$           ! first unbind
+!!$           
+!!$           if (ligboundto(1,iichain,iicol).gt.0) then
+!!$              distij(:)=posblob(:,nblobsperchain,iichain,iicol) - posblob(:, &
+!!$                   nblobsperchain,ligboundto(2,iichain,iicol),ligboundto(1,iichain,iicol))
+!!$              distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
+!!$              if (sum(distij*distij) .gt. rcut_liglig2 ) then
+!!$                 write(*,*) 'WARNING: trying to delete a bond but distij > rcut_liglig' ! cannot unbind if distij2 > rcut2, no reverse move in configurational bias !!!!
+!!$              endif
+!!$              
+!!$              ligboundto(:,ligboundto(2,iichain,iicol),ligboundto(1,iichain,iicol))=0
+!!$              ligboundto(:,iichain,iicol)=0
+!!$              nbonds=nbonds-1
+!!$           endif
+!!$           
+!!$           call find_lig_homie(posblob(:,nblobsperchain,iichain,iicol),nchainspercol,nblobsperchain,lbox,posblob,&
+!!$                celllistb,ipcb,ncellsb,socb,mnpic,rcut_liglig,ligboundto,maxncol,maxnblob,&
+!!$                nlighomies_old,whichhomies_old)
+!!$
+!!$           
+!!$           ! get the old binding partition function
+!!$           q1bi_old(:)=0  
+!!$           if ((nlighomies_old .gt. 0) .and. (nbonds < nWL_points - 1 )) then
+!!$             
+!!$              ! get partition funcition with psi bias
+!!$              do ihomie=1,nlighomies_old
+!!$                 if (ichainspec(iichain,iicol) .eq. ichainspec(whichhomies_old(2,ihomie), &
+!!$                      whichhomies_old(1,ihomie))) then
+!!$                    ! homie is of equal type, must exclude otherwise ligands can bind to themselves!!
+!!$                    q1bi_old(ihomie)=0
+!!$                 else
+!!$                    distij(:)=posblob(:,nblobsperchain,iichain,iicol) - posblob(:,nblobsperchain,&
+!!$                         whichhomies_old(2,ihomie),whichhomies_old(1,ihomie))
+!!$                    distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
+!!$                    q1bi_old(ihomie)=dexp(-RXBONDENE(ichainspec(whichhomies_old(2,ihomie),whichhomies_old(1,ihomie)),&
+!!$                         ichainspec(iichain,iicol)) - 0.534*(sqrt(sum(distij*distij))-0.73)**2 & 
+!!$                         + psiWL(nbonds+2)-psiWL(nbonds+1))
+!!$                    !  write(*,*)q1bi_old(ihomie)
+!!$                 endif
+!!$              enddo
+!!$             
+!!$             ! q1bi_old(:)=q1bi_old(:)*dexp(psiWL(nbonds+2)-psiWL(nbonds+1))  !WL
+!!$         !     write(*,*) 'AAAA ', q1bi_old(:nlighomies_old)
+!!$         !     write(*,*) 'BBBB ', dexp(700.0d0),dexp(-700.0d0),dexp(RXBONDENE(1,1)),dexp(-RXBONDENE(1,1))
+!!$              Qold=Qold+sum(q1bi_old(1:nlighomies_old))
+!!$            !  write(*,*) 'AAAQo ', nbonds, Qold, q1bi_old(1:nlighomies_old)
+!!$            !  write(*,*) psiWL
+!!$           endif ! nlighomies > 0
+!!$           
+!!$              
+!!$           ! new position homies
+!!$           call find_lig_homie(rinew,nchainspercol,nblobsperchain,lbox,posblob,&
+!!$                celllistb,ipcb,ncellsb,socb,mnpic,rcut_liglig,ligboundto,maxncol,maxnblob,&
+!!$                nlighomies_new,whichhomies_new)
+!!$           
+!!$           ! get the new binding partition function
+!!$           q1bi_new(:)=0
+!!$           if ((nlighomies_new .gt. 0) .and. (nbonds < nWL_points - 1)) then
+!!$              
+!!$              ! get partition funcition
+!!$              do ihomie=1,nlighomies_new
+!!$                 if (ichainspec(iichain,iicol) .eq. ichainspec(whichhomies_new(2,ihomie), &
+!!$                      whichhomies_new(1,ihomie))) then ! homie is of equal type
+!!$                    q1bi_new(ihomie)=0
+!!$                 else
+!!$                    
+!!$                    distij(:)=rinew(:)-posblob(:,nblobsperchain,whichhomies_new(2,ihomie),whichhomies_new(1,ihomie))
+!!$                    distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
+!!$                    q1bi_new(ihomie)=dexp(-RXBONDENE(ichainspec(whichhomies_new(2,ihomie),whichhomies_new(1,ihomie)),&
+!!$                         ichainspec(iichain,iicol)) - 0.534*(sqrt(sum(distij*distij))-0.73)**2 &
+!!$                         +psiWL(nbonds+2)-psiWL(nbonds+1))
+!!$                 endif
+!!$              enddo
+!!$        !      q1bi_new(:)=q1bi_new(:)*exp(psiWL(nbonds+2)-psiWL(nbonds+1)) !WL
+!!$              Qnew=Qnew+sum(q1bi_new(1:nlighomies_new))
+!!$           !   write(*,*) 'BBBQn ', nbonds, Qnew, q1bi_new(1:nlighomies_new)
+!!$           endif ! nrechomies > 0
+!!$           
+!!$        endif ! iiblob .eq. nblobsperchain
+!!$        ! END BiNDING WITH LIGANDS
+!!$        
+!!$        ! DO METROPOLIS
+!!$        arg=exp(Eold-Enew)*Qnew/Qold
+!!$    !    if (isnan(arg)) then
+!!$    !       write(*,*) Qnew, Qold,(0.5 < arg)
+!!$    !    endif
+!!$        call random_number(rnd)
+!!$        if (rnd .lt. arg) then! ACCEPT
+!!$           
+!!$           movebacc=movebacc+1
+!!$           posblob(:,iiblob,iichain,iicol)=rinew(:)
+!!$           tot_ene=tot_ene+Enew-Eold        
+!!$           
+!!$           inewcell(:) = floor(rinew(:)/socb(:))+1
+!!$  !!         inewcell(3)=min(inewcell(3),ncellsb(3)) ! because soft blobs can in principle penetrate the wall slightly
+!!$  !!         inewcell(3)=max(inewcell(3),1)
+!!$           iblob=(iicol-1)*nblobsperchain*nchainspercol+(iichain-1)*nblobsperchain+iiblob
+!!$           if (any(inewcell .ne. ipcb(1:3,iblob))) then
+!!$              call update_cell_list(iblob,maxnblob,inewcell,ipcb,celllistb,&
+!!$                   ncellsb,mnpic)
+!!$           endif
+!!$           
+!!$           ! bind to some ligand
+!!$            if (lastbond) then ! unbound state is not possible, last bond and colloid is outside of range.
+!!$              arg=0
+!!$           else
+!!$              arg=1.0d0/Qnew
+!!$           endif
+!!$           
+!!$         !  write(*,*) 'CCCC ', arg
+!!$         !  write(*,*)
+!!$           if (nbonds < nWL_points - 1) then ! less than maximum number of bonds, can bind more
+!!$              q1bi_new(:)=q1bi_new(:)/Qnew ! normalise partition functions
+!!$              call random_number(rnd)
+!!$              ! bind to some receptor
+!!$              if (rnd .gt. arg) then !  bind
+!!$                 
+!!$                 do ihomie=1,nlighomies_new
+!!$                    arg=arg+q1bi_new(ihomie)
+!!$                    if ((rnd .le. arg) .or. (isnan(arg))) then
+!!$                       jjcol=whichhomies_new(1,ihomie)
+!!$                       jjchain=whichhomies_new(2,ihomie)
+!!$                       ligboundto(1:2,iichain,iicol)=(/jjcol,jjchain/)
+!!$                       ligboundto(1:2,jjchain,jjcol)=(/iicol,iichain/)
+!!$                       nbonds=nbonds+1  ! add bond to global bonds count
+!!$                       !        write(*,*) iicol, iichain
+!!$                       !        write(*,*) jjcol, jjchain
+!!$                       exit
+!!$                    endif
+!!$                 enddo
+!!$              endif
+!!$           endif
+!!$           
+!!$        else ! REJECT
+!!$           ! rebind to some ligand
+!!$           if (lastbond) then
+!!$              arg=0
+!!$           else
+!!$              arg=1.0d0/Qold
+!!$           endif
+!!$         !  write(*,*) 'DDDD ', arg
+!!$         !  write(*,*)
+!!$           if (nbonds < nWL_points - 1) then ! less than maximum number of bonds, can bind more
+!!$              q1bi_old(:)=q1bi_old(:)/Qold ! normalise partition functions
+!!$              call random_number(rnd)
+!!$              ! bind to some receptor
+!!$              if (rnd .gt. arg) then !  bind
+!!$                 
+!!$                 do ihomie=1,nlighomies_old
+!!$                    arg=arg+q1bi_old(ihomie)
+!!$                    if ((rnd .le. arg) .or. (isnan(arg))) then
+!!$                       jjcol=whichhomies_old(1,ihomie)
+!!$                       jjchain=whichhomies_old(2,ihomie)
+!!$                       ligboundto(1:2,iichain,iicol)=(/jjcol,jjchain/)
+!!$                       ligboundto(1:2,jjchain,jjcol)=(/iicol,iichain/)
+!!$                       nbonds=nbonds+1
+!!$                       
+!!$                       exit
+!!$                    endif
+!!$                 enddo
+!!$              endif ! bind
+!!$           endif
+!!$        endif ! accept/reject
+!!$     endif ! move anchor/other blob
+
+
+
+
+     
   endif ! move col/blob
 !  write(*,*) 'FFFFF ', nbonds
 !  write(*,*) 'ligbonds1 ', ligboundto(1,:,1)
@@ -1731,12 +2010,12 @@ end subroutine col_energy_calc
 !==========================================================================!
 subroutine tot_ene_calc(posblob,poscol,lbox,nrec,ncol,maxncol,nchainspercol,& 
               nblobsperchain,maxnblob,celllistc,ipcc,celllistb,ipcb,ncellsc,ncellsb,&
-              socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,tot_ene)
+              socc,socb,mnpic,rcut_blobblob,rcut_blobwall,rcol,ligboundto,tot_ene)
   implicit none
   integer, intent(in) :: maxncol,nrec,nblobsperchain,ncellsc(3),ncellsb(3),mnpic,&
        celllistc(mnpic,ncellsc(1),ncellsc(2),ncellsc(3)),ipcc(4,maxncol),&
        nchainspercol,celllistb(mnpic,ncellsb(1),ncellsb(2),ncellsb(3)),maxnblob,&
-       ipcb(4,maxnblob),ncol
+       ipcb(4,maxnblob),ncol,ligboundto(2,nchainspercol,maxncol)
   real*8, intent(in) :: lbox(3),socc(3),socb(3),&
        posblob(3,nblobsperchain,nchainspercol,maxncol),&
        rcut_blobblob,rcut_blobwall,rcol,poscol(3,maxncol)
@@ -1747,7 +2026,7 @@ subroutine tot_ene_calc(posblob,poscol,lbox,nrec,ncol,maxncol,nchainspercol,&
        iblob,jblob,jjblob,iiblob,jjchain,iichain,cellrat(3),tmpcell(3),ii,jj,ipcnew(3),&
        ipcbc(3)
   real*8 :: distij(3),distij2,rbb,rbb2,rbw,&
-       rcut_blobblob2,time1,time2, iforcexyz(3),eCS_blobwall,eCS_blobblob
+       rcut_blobblob2,time1,time2, iforcexyz(3),eCS_blobwall,eCS_blobblob,tmpreal8
   real*8, parameter :: pi=3.14159265d0
   
   rcut_blobblob2=rcut_blobblob**2
@@ -1857,6 +2136,26 @@ subroutine tot_ene_calc(posblob,poscol,lbox,nrec,ncol,maxncol,nchainspercol,&
         enddo ! nblobsperchain
      enddo ! nchainspercol
   enddo ! ncol
+
+
+  !add bond energy
+  iicol=1
+  do iichain=1,nchainspercol ! loop over the ii colloid
+     jjcol=ligboundto(1,iichain,iicol)
+     jjchain=ligboundto(2,iichain,iicol)
+     if (jjcol .gt. 0) then  ! bond is present        
+        ! new distance
+        distij=posblob(:,1,iichain,iicol) - posblob(:,1,jjchain,jjcol)
+        distij(1:3)=distij(1:3)-lbox(1:3)*nint(distij(1:3)/lbox(1:3))
+        distij2=sum(distij*distij)
+        call fbondene(tmpreal8,distij2)
+        Enew=Enew + tmpreal8
+     endif
+  enddo
+  tot_ene=tot_ene+Enew
+  
+
+  
   
 end subroutine tot_ene_calc
 ! ========================================================================== !
@@ -1958,7 +2257,7 @@ subroutine make_cell_list(ncol,maxncol,maxnblob,nchainspercol,nblobsperchain,&
   do ii=1,ncol
      ipcc(1:3,ii)=floor(poscol(:,ii)/socc(:))+1        
      do jj=1,nchainspercol
-        do kk=2,nblobsperchain ! ANCHOR IS NOT IN THE CELL LIST
+        do kk=min(2,nblobsperchain),nblobsperchain ! ANCHOR IS IN THE CELL LIST IF NBLOBSPERCHAIN==1
            iblob=(ii-1)*nblobsperchain*nchainspercol+(nblobsperchain)*(jj-1)+kk
            ipcb(1:3,iblob)=floor(posblob(:,kk,jj,ii)/socb(:))+1
            
@@ -2279,12 +2578,12 @@ subroutine output_conf_lammps(poscol,posblob,maxncol,nchainspercol,nblobsperchai
   character*4 :: char1,char2
   character*6 :: char3,char4
   integer :: irec,icol,ichain,iblob,ii,ibin,ind, bondsave(3,maxncol*nchainspercol*nblobsperchain), &
-       bind
+       bind, jcol,jchain,jind
 
-  if(nblobsperchain .lt. 2) then
-     write(*,*) 'ERROR: nblobsperchain must be at least 2 for lammps output to work.. exiting'
-     call exit()
-  endif
+!!$  if(nblobsperchain .lt. 2) then
+!!$     write(*,*) 'ERROR: nblobsperchain must be at least 2 for lammps output to work.. exiting'
+!!$     call exit()
+!!$  endif
   
   FOA = "(I6,I6,I6,F9.3,F9.3,F9.3)" ! format output atoms
   FOB = "(I6,I6,I6,I6)" ! format output bonds
@@ -2295,12 +2594,28 @@ subroutine output_conf_lammps(poscol,posblob,maxncol,nchainspercol,nblobsperchai
 !  write(char4,'(I6)') nrec+100000
   !write(*,*) 'OK'
   filename=trim(outfilename)//'_cnf_out'//char1//'.lammps'
+
+  bind=0
+  ! get the total number of bonds
+  do icol=1,ncol
+     do ichain=1,nchainspercol
+        if (ligboundto(1,ichain,icol) .gt. 0 ) then  ! ADD BOND
+           ! don't double count
+           if (icol .gt. ligboundto(1,ichain,icol)) then
+              bind=bind+1
+           elseif ((icol .eq. ligboundto(1,ichain,icol)).and.(ichain .gt. ligboundto(2,ichain,icol))) then
+              bind=bind+1
+           endif
+        endif
+     enddo
+  enddo
+
   
   open(unit=222,file=filename)
   write(222,"(A)") 'Lammps out for doublexp FreeE calcs  '
   write(222,"(A)") ' '
   write(222,*) ncol*(nblobsperchain*nchainspercol + 1), '    atoms'
-  write(222,*) ncol*nchainspercol*(nblobsperchain - 1), '    bonds'
+  write(222,*) ncol*nchainspercol*(nblobsperchain - 1) + bind, '    bonds'
   write(222,"(A)")' '
   write(222,*) 3+nrxspec, '    atom types'
   write(222,*) 3, '    bond types'
@@ -2318,38 +2633,46 @@ subroutine output_conf_lammps(poscol,posblob,maxncol,nchainspercol,nblobsperchai
      ind=ind+1
      write(222,FOA) ind, icol, 1,  poscol(:,icol)
      do ichain=1,nchainspercol
-        ind=ind+1
-        write(222,FOA) ind, icol, 2, posblob(:,1,ichain,icol) ! chain anchor on particle
-        do iblob=2,nblobsperchain-1
+        if (nblobsperchain .gt. 1) then
            ind=ind+1
-           write(222,FOA) ind, icol, 3,  posblob(:,iblob,ichain,icol)  ! inert blobs
-           ! BONDS SAVE
-           if (iblob .eq. 2) then
-              bind=bind+1
-              bondsave(1:3,bind)=(/1,ind,ind-1/) ! anchor to blob bond type 1
-           else
-              bind=bind+1
-              bondsave(1:3,bind)=(/2,ind,ind-1/) ! blob to blob bond type 2
-           endif
-           
-           
-        enddo
+           write(222,FOA) ind, icol, 2, posblob(:,1,ichain,icol) ! chain anchor on particle
+           do iblob=2,nblobsperchain-1
+              ind=ind+1
+              write(222,FOA) ind, icol, 3,  posblob(:,iblob,ichain,icol)  ! inert blobs
+              ! BONDS SAVE
+              if (iblob .eq. 2) then
+                 bind=bind+1
+                 bondsave(1:3,bind)=(/1,ind,ind-1/) ! anchor to blob bond type 1
+              else
+                 bind=bind+1
+                 bondsave(1:3,bind)=(/2,ind,ind-1/) ! blob to blob bond type 2
+              endif
+              
+           enddo
+        endif !nblobsperchain > 1
+
+        
         ind=ind+1
         write(222,FOA) ind, icol, ichainspec(ichain,icol)+ 3, posblob(:,nblobsperchain,ichain,icol)   ! ligand
-        bind=bind+1
-        bondsave(1:3,bind)=(/2,ind,ind-1/) ! blob to blob bond type 2
+
         
-!!$        ! add ligand bond if present
-!!$        if (ligboundto(1,ichain,icol) .gt. 0 ) then  ! ADD BOND
-!!$           ! don't double count
-!!$           if (icol .gt. ligboundto(1,ichain,icol)) then
-!!$              bind=bind+1
-!!$              bondsave(1:3,bind) = (/3,ind,ind-1/)
-!!$           elseif ((icol .eq. ligboundto(1,ichain,icol)).and.(ichain .gt. ligboundto(2,ichain,icol))) then
-!!$              bind=bind+1
-!!$              bondsave(1:3,bind) = (/3,ind,ind-1/)
-!!$           endif
-!!$        endif
+        ! add ligand bond if present
+        if (ligboundto(1,ichain,icol) .gt. 0 ) then  ! ADD BOND
+           ! don't double count
+           if (icol .gt. ligboundto(1,ichain,icol)) then
+              bind=bind+1
+
+              jind=nblobsperchain*nchainspercol*(ligboundto(1,ichain,icol)-1) + icol + (ligboundto(2,ichain,icol)-0)*nblobsperchain 
+              
+              bondsave(1:3,bind) = (/2,ind,jind/)
+           elseif ((icol .eq. ligboundto(1,ichain,icol)).and.(ichain .gt. ligboundto(2,ichain,icol))) then
+              bind=bind+1
+
+              jind=nblobsperchain*nchainspercol*(ligboundto(1,ichain,icol)-1) + icol + (ligboundto(2,ichain,icol)-0)*nblobsperchain 
+              
+              bondsave(1:3,bind) = (/2,ind,jind/)
+           endif
+        endif
      enddo
   enddo
 
@@ -2429,12 +2752,15 @@ subroutine output_conf_trj(poscol,posblob,maxncol,nchainspercol,nblobsperchain,n
      write(555,FOAL) ind, 1,  poscol(:,icol)/lbox(:)
      do ichain=1,nchainspercol
         ind=ind+1
-        write(555,FOAL) ind, 2, posblob(:,1,ichain,icol)/lbox(:) ! chain anchor on particle
-        do iblob=2,nblobsperchain-1
-           ind=ind+1
-           write(555,FOAL) ind, 3,  posblob(:,iblob,ichain,icol)/lbox(:)  ! inert blobs
-          
-        enddo
+        if (nblobsperchain .gt. 1) then
+           write(555,FOAL) ind, 2, posblob(:,1,ichain,icol)/lbox(:) ! chain anchor on particle
+        
+           do iblob=2,nblobsperchain-1
+              ind=ind+1
+              write(555,FOAL) ind, 3,  posblob(:,iblob,ichain,icol)/lbox(:)  ! inert blobs
+              
+           enddo
+        endif
         ind=ind+1
         write(555,FOAL) ind, ichainspec(ichain,icol)+ 3, &
              posblob(:,nblobsperchain,ichain,icol)/lbox(:)   ! ligand
@@ -2544,3 +2870,4 @@ subroutine output_conf_wlbonds(poscol,posblob,maxncol,nchainspercol,nblobspercha
   ! END VMD OUTPUT FILE
   
 end subroutine output_conf_wlbonds
+

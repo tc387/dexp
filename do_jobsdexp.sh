@@ -8,11 +8,11 @@ do
     do
 	for rcol in 50
 	do
-	    for maxnbonds in 24
+	    for maxnbonds in 24 36
 	    do
-		let maxbonddist=20
+		let maxbonddist=30
 		
-		for form in m a t r # mobile, annealed, thomson, random
+		for form in m t r # mobile, annealed, thomson, random
 		do
 		    ndir='nsim_dexp_f'$form'_mnb'$maxnbonds'_nl'$nlig'_rc'$rcol'_r'$rep
 		    
