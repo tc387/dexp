@@ -848,7 +848,7 @@ subroutine mc_move2WL(lbox,ncol,maxncol,nchainspercol,nblobsperchain,maxnblob,rc
   WLoldbin=1
   WLnewbin=1
   
-  garg=1.d0/(nblobsperchain*nchainspercol + 1)
+  garg=10.d0/(nblobsperchain*nchainspercol + 1)
   call random_number(rnd)  
   if (rnd .lt. garg) then ! move colloid
     
@@ -2659,16 +2659,13 @@ subroutine output_conf_lammps(poscol,posblob,maxncol,nchainspercol,nblobsperchai
         ! add ligand bond if present
         if (ligboundto(1,ichain,icol) .gt. 0 ) then  ! ADD BOND
            ! don't double count
-           if (icol .gt. ligboundto(1,ichain,icol)) then
+           if (icol .eq. 2 ) then  ! only works for two colloids
               bind=bind+1
 
-              jind=nblobsperchain*nchainspercol*(ligboundto(1,ichain,icol)-1) + icol + (ligboundto(2,ichain,icol)-0)*nblobsperchain 
-              
-              bondsave(1:3,bind) = (/2,ind,jind/)
-           elseif ((icol .eq. ligboundto(1,ichain,icol)).and.(ichain .gt. ligboundto(2,ichain,icol))) then
-              bind=bind+1
-
-              jind=nblobsperchain*nchainspercol*(ligboundto(1,ichain,icol)-1) + icol + (ligboundto(2,ichain,icol)-0)*nblobsperchain 
+          !    write(*,*)
+              jind= 1 + (ligboundto(2,ichain,icol)-0)*nblobsperchain
+          !    write(*,*) ligboundto(2,ichain,icol), ligboundto(1,ichain,icol)
+          !    write(*,*) ind, ichain, icol
               
               bondsave(1:3,bind) = (/2,ind,jind/)
            endif

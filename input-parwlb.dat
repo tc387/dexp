@@ -7,15 +7,15 @@ INPUT FILE FOR MC HAIRY NANOPARTICLE CODE
 256 0 0 0   	# of chains per rx specie - colloid 1
 0 256 0 0  	# of chains per rx specie - colloid 2
 1 		# of blobs in each chain (1 is only an anchor)
-10000000	tot # of MC cycles
-100000	output configration timer
+100000000	tot # of MC cycles
+10000	output configration timer
 ------------------------------------------------------------
 50		colloid radius - minimum 2, otherwise problem with cells in Ecalc
 30		maximum bond distance -- rcut_liglig
 0.0		fraction make/break bond moves ; else hop moves
 2.0, 0.05, 0.02	max hop blob, hop col, rot col (actually sin(.))
 200		mnpic+1 -- max # of col,blobs,rec in each cell			
-12337		random seed
+12325		random seed
 -----------------------------------------------------------
 .false.		mobile ligands
 0		annealing equilebration steps (0 is quenched ligand pos)
@@ -25,7 +25,7 @@ INPUT FILE FOR MC HAIRY NANOPARTICLE CODE
 'test'	output file name
 -----------------------------------------------------------
 3		max_colzWL - maximum distante between colloids for when zero bonds.
-36		max nbonds
+24		max nbonds
 1, 0.0000001, 4 fWL_start, fWL_stop, fWL_reduce factor  --  f parameters for WL psi update
 1.5	    	hWL_conv -- WL Histogram convergance criterion
 -----------------------------------------------------------
