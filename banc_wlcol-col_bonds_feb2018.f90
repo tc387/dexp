@@ -344,7 +344,7 @@ do icycle=1,ncycles
       write(*,"(A,F7.5,A,F7.5,A,F7.5)") 'movebacc:',dble(movebacc)/dble(totidm)/&
            (1-fracbm)*(nchainspercol*nblobsperchain+1)/dble(nchainspercol*nblobsperchain),&
            '   movecacc:',real(movecacc)/dble(totidm)/&
-           (1-fracbm)*(nchainspercol*nblobsperchain+1) ,  &
+           (1-fracbm)*(nchainspercol*nblobsperchain+1)/5.0 ,  &
            '   bondacc:',dble(bondacc)/dble(totidm)/fracbm
       write(*,"(A,F10.8,A,F8.2,A,I5)") 'fWL: ',fWL,'   hWLrat: ', &
            dble(maxval(hWL))/minval(hWL),'   nbonds: ', nbonds
@@ -848,7 +848,7 @@ subroutine mc_move2WL(lbox,ncol,maxncol,nchainspercol,nblobsperchain,maxnblob,rc
   WLoldbin=1
   WLnewbin=1
   
-  garg=10.d0/(nblobsperchain*nchainspercol + 1)
+  garg=5.d0/(nblobsperchain*nchainspercol + 1)
   call random_number(rnd)  
   if (rnd .lt. garg) then ! move colloid
     
@@ -861,7 +861,7 @@ subroutine mc_move2WL(lbox,ncol,maxncol,nchainspercol,nblobsperchain,maxnblob,rc
         if (iicol .ne. 2) WRITE(*,*) 'ERROR: iicol must be 2, something wrong in WLmc_move'
         rinew(:)=poscol(:,iicol)
 
-        if (.not. fixcol_flag) then ! don't move the colloid
+        if (.not. fixcol_flag) then !  move the colloid
            ! get old distance
            distij(1:3) = rinew(1:3) - poscol(1:3,1)
            distij2old=sum(distij(1:3)*distij(1:3))
@@ -900,7 +900,13 @@ subroutine mc_move2WL(lbox,ncol,maxncol,nchainspercol,nblobsperchain,maxnblob,rc
         enddo
         sqrtSrot=sqrt(1-Srot)
         urot=(/2*Vrot(1)*sqrtSrot,2*Vrot(2)*sqrtSrot,1-2*Srot/) ! random rotation axis
-        sinfi=max_rot_col*(2*rnd3(3)-1.0)
+       
+        if (sum(ligboundto(:,:,iicol)) .eq.0) then ! no bonds present, rotate by a large angle
+           sinfi=1*(2*rnd3(3)-1.0) ! max rotate by  pi/2
+        else ! rotate by a small angle
+           sinfi=max_rot_col*(2*rnd3(3)-1.0)
+        endif
+        
         cosfi=dsqrt(1.0d0-sinfi*sinfi)
         omcosfi=1.0d0-cosfi
         
@@ -1094,36 +1100,44 @@ subroutine mc_move2WL(lbox,ncol,maxncol,nchainspercol,nblobsperchain,maxnblob,rc
            !  write(*,*) psiWL
         endif ! nlighomies > 0
         
-        
-        ! new position homies
-        call find_lig_homie(rinew,nchainspercol,nblobsperchain,lbox,posblob,&
-             celllistb,ipcb,ncellsb,socb,mnpic,rcut_liglig,ligboundto,maxncol,maxnblob,&
-             nlighomies_new,whichhomies_new)
-        
-        ! get the new binding partition function
-        q1bi_new(:)=0
-        if ((nlighomies_new .gt. 0) .and. (nbonds < nWL_points - 1)) then
-           
-           ! get partition funcition
-           do ihomie=1,nlighomies_new
-              if (ichainspec(iichain,iicol) .eq. ichainspec(whichhomies_new(2,ihomie), &
-                   whichhomies_new(1,ihomie))) then ! homie is of equal type
-                 q1bi_new(ihomie)=0
-              else
-                 
-                 distij(:)=rinew(:)-posblob(:,nblobsperchain,whichhomies_new(2,ihomie),whichhomies_new(1,ihomie))
-                 distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
-                 call fbondene(newbondelene,sum(distij*distij))
-                 
-                 q1bi_new(ihomie)=dexp(-RXBONDENE(ichainspec(whichhomies_new(2,ihomie),whichhomies_new(1,ihomie)),&
-                      ichainspec(iichain,iicol)) -newbondelene &
-                      +psiWL(nbonds+2)-psiWL(nbonds+1))
-              endif
-           enddo
-           !      q1bi_new(:)=q1bi_new(:)*exp(psiWL(nbonds+2)-psiWL(nbonds+1)) !WL
-           Qnew=Qnew+sum(q1bi_new(1:nlighomies_new))
-           !   write(*,*) 'BBBQn ', nbonds, Qnew, q1bi_new(1:nlighomies_new)
-        endif ! nrechomies > 0
+
+        if (mobile_ligands) then  ! new partition function is different
+           ! new position homies
+           call find_lig_homie(rinew,nchainspercol,nblobsperchain,lbox,posblob,&
+                celllistb,ipcb,ncellsb,socb,mnpic,rcut_liglig,ligboundto,maxncol,maxnblob,&
+                nlighomies_new,whichhomies_new)
+
+           ! get the new binding partition function
+           q1bi_new(:)=0
+           if ((nlighomies_new .gt. 0) .and. (nbonds < nWL_points - 1)) then
+
+              ! get partition funcition
+              do ihomie=1,nlighomies_new
+                 if (ichainspec(iichain,iicol) .eq. ichainspec(whichhomies_new(2,ihomie), &
+                      whichhomies_new(1,ihomie))) then ! homie is of equal type
+                    q1bi_new(ihomie)=0
+                 else
+
+                    distij(:)=rinew(:)-posblob(:,nblobsperchain,whichhomies_new(2,ihomie),whichhomies_new(1,ihomie))
+                    distij(:)=distij(:)-lbox(:)*nint(distij(:)/lbox(:))
+                    call fbondene(newbondelene,sum(distij*distij))
+
+                    q1bi_new(ihomie)=dexp(-RXBONDENE(ichainspec(whichhomies_new(2,ihomie),whichhomies_new(1,ihomie)),&
+                         ichainspec(iichain,iicol)) -newbondelene &
+                         +psiWL(nbonds+2)-psiWL(nbonds+1))
+                 endif
+              enddo
+              !      q1bi_new(:)=q1bi_new(:)*exp(psiWL(nbonds+2)-psiWL(nbonds+1)) !WL
+              Qnew=Qnew+sum(q1bi_new(1:nlighomies_new))
+              !   write(*,*) 'BBBQn ', nbonds, Qnew, q1bi_new(1:nlighomies_new)
+           endif ! nrechomies > 0
+
+        else ! new partition function is the same as the old one
+           Qnew=Qold
+           q1bi_new=q1bi_old
+           nlighomies_new=nlighomies_old
+           whichhomies_new=whichhomies_old         
+        endif ! mobile_ligands
         
      endif ! iiblob .eq. nblobsperchain
      ! END BiNDING WITH LIGANDS
@@ -1144,9 +1158,11 @@ subroutine mc_move2WL(lbox,ncol,maxncol,nchainspercol,nblobsperchain,maxnblob,rc
         !!         inewcell(3)=min(inewcell(3),ncellsb(3)) ! because soft blobs can in principle penetrate the wall slightly
         !!         inewcell(3)=max(inewcell(3),1)
         iblob=(iicol-1)*nblobsperchain*nchainspercol+(iichain-1)*nblobsperchain+iiblob
-        if (any(inewcell .ne. ipcb(1:3,iblob))) then
-           call update_cell_list(iblob,maxnblob,inewcell,ipcb,celllistb,&
-                ncellsb,mnpic)
+        if (mobile_ligands) then
+           if (any(inewcell .ne. ipcb(1:3,iblob))) then
+              call update_cell_list(iblob,maxnblob,inewcell,ipcb,celllistb,&
+                   ncellsb,mnpic)
+           endif
         endif
         
         ! bind to some ligand
